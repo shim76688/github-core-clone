@@ -275,7 +275,7 @@ export function buildPack(objects: readonly GitObject[]): Buffer {
       }
     }
     parts.push(Buffer.from(headerBytes));
-    parts.push(zlib.deflateSync(obj.data));
+    parts.push(zlib.deflateSync(obj.data, { level: 1 }));
   }
   const body = Buffer.concat(parts);
   return Buffer.concat([body, Buffer.from(sha1Hex(body), 'hex')]);
