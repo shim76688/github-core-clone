@@ -786,45 +786,91 @@ export function pullFiles(store: Store, repo: RepoRec, pull: PullRec): Record<st
   });
 }
 
-function mergePull(store: Store, repo: RepoRec, pull: PullRec, body: Record<string, unknown>): RestResponse {
-  const method = typeof body.merge_method === 'string' ? body.merge_method : 'merge';
-  if (pull.merged || pull.state !== 'open') {
-    return { status: 405, json: { message: 'Pull Request is not mergeable' } };
-  }
+/** Create an issue record (shared by REST, GraphQL and MCP). Labels must already exist. */
+export function createIssueRecord(
+  store: Store,
+  repo: RepoRec,
+  input: { title: string; body: string; labels?: string[] },
+): IssueRec {
+  const number = repo.nextNumber;
+  repo.nextNumber += 1;
+  const issue: IssueRec = {
+    number,
+    title: input.title,
+    body: input.body,
+    state: 'open',
+    labels: input.labels ?? [],
+    comments: [],
+    seq: store.nextSeq(),
+    closedSeq: null,
+  };
+  repo.issues.set(number, issue);
+  return issue;
+}
+
+/** Create a pull request record (shared by REST, GraphQL and MCP); branches are the caller's check. */
+export function createPullRecord(
+  store: Store,
+  repo: RepoRec,
+  input: { title: string; body: string; head: string; base: string },
+): PullRec {
+  const number = repo.nextNumber;
+  repo.nextNumber += 1;
+  const pull: PullRec = {
+    number,
+    title: input.title,
+    body: input.body,
+    state: 'open',
+    head: input.head,
+    base: input.base,
+    merged: false,
+    mergedSeq: null,
+    mergeCommitSha: null,
+    seq: store.nextSeq(),
+  };
+  repo.pulls.set(number, pull);
+  return pull;
+}
+
+/**
+ * Merge a pull request into its base branch. Returns the merge commit sha, or the reason it
+ * cannot merge. Shared by the REST merge endpoint, GraphQL mergePullRequest and MCP.
+ */
+export function performMerge(
+  store: Store,
+  repo: RepoRec,
+  pull: PullRec,
+  method: string,
+): { sha: string } | { conflict: string } | { error: string } {
+  if (pull.merged || pull.state !== 'open') return { error: 'Pull Request is not mergeable' };
   const baseRef = `refs/heads/${pull.base}`;
   const baseSha = repo.refs.get(baseRef);
   const headSha = repo.refs.get(`refs/heads/${pull.head}`);
-  if (baseSha === undefined || headSha === undefined) return { status: 405, json: { message: 'Pull Request is not mergeable' } };
+  if (baseSha === undefined || headSha === undefined) return { error: 'Pull Request is not mergeable' };
   const baseCommit = store.commitOf(baseSha);
   const headCommit = store.commitOf(headSha);
-  if (baseCommit === null || headCommit === null) return { status: 405, json: { message: 'Pull Request is not mergeable' } };
+  if (baseCommit === null || headCommit === null) return { error: 'Pull Request is not mergeable' };
   const mergeBase = mergeBaseOf(store, baseSha, headSha);
-  if (mergeBase === null || mergeBase === headSha) return { status: 405, json: { message: 'Pull Request is not mergeable' } };
+  if (mergeBase === null || mergeBase === headSha) return { error: 'Pull Request is not mergeable' };
   const mergeBaseCommit = store.commitOf(mergeBase);
-  if (mergeBaseCommit === null) return { status: 405, json: { message: 'Pull Request is not mergeable' } };
+  if (mergeBaseCommit === null) return { error: 'Pull Request is not mergeable' };
   const merged = mergeTrees(store, mergeBaseCommit.tree, baseCommit.tree, headCommit.tree);
-  if ('conflict' in merged) return { status: 405, json: { message: 'Pull Request is not mergeable' } };
+  if ('conflict' in merged) return { conflict: merged.conflict };
   const seq = store.nextSeq();
-  let commit: string;
-  if (method === 'squash') {
-    commit = makeCommit(store, {
-      tree: merged.tree,
-      parents: [baseSha],
-      message: `${pull.title} (#${pull.number})`,
-      seq,
-    });
-  } else {
-    commit = makeCommit(store, {
-      tree: merged.tree,
-      parents: [baseSha, headSha],
-      message: `Merge pull request #${pull.number} from ${pull.head}`,
-      seq,
-    });
-  }
+  const commit = method === 'squash'
+    ? makeCommit(store, { tree: merged.tree, parents: [baseSha], message: `${pull.title} (#${pull.number})`, seq })
+    : makeCommit(store, { tree: merged.tree, parents: [baseSha, headSha], message: `Merge pull request #${pull.number} from ${pull.head}`, seq });
   repo.refs.set(baseRef, commit);
   pull.merged = true;
   pull.state = 'closed';
   pull.mergedSeq = seq;
   pull.mergeCommitSha = commit;
-  return { status: 200, json: { sha: commit, merged: true, message: 'Pull Request successfully merged' } };
+  return { sha: commit };
+}
+
+function mergePull(store: Store, repo: RepoRec, pull: PullRec, body: Record<string, unknown>): RestResponse {
+  const method = typeof body.merge_method === 'string' ? body.merge_method : 'merge';
+  const result = performMerge(store, repo, pull, method);
+  if ('sha' in result) return { status: 200, json: { sha: result.sha, merged: true, message: 'Pull Request successfully merged' } };
+  return { status: 405, json: { message: 'Pull Request is not mergeable' } };
 }

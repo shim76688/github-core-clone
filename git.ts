@@ -683,23 +683,23 @@ export function handleFetchV2(store: Store, body: Buffer): Buffer {
   const plan = planFetch(store, request);
   const parts: Buffer[] = [];
   if (request.haves.length > 0 && !request.done) {
-    parts.push(pktLine('acknowledgments'));
-    if (plan.common.length === 0) parts.push(pktLine('NAK'));
+    parts.push(pktLine('acknowledgments\n'));
+    if (plan.common.length === 0) parts.push(pktLine('NAK\n'));
     else {
       plan.common.forEach((sha, index) => {
-        parts.push(pktLine(`ACK ${sha}${index === plan.common.length - 1 ? ' ready' : ''}`));
+        parts.push(pktLine(`ACK ${sha}${index === plan.common.length - 1 ? ' ready' : ''}\n`));
       });
     }
     parts.push(PKT_FLUSH);
     return Buffer.concat(parts);
   }
   if (request.depth !== null || request.shallowLines.length > 0) {
-    parts.push(pktLine('shallow-info'));
-    for (const sha of plan.shallow) parts.push(pktLine(`shallow ${sha}`));
-    for (const sha of plan.unshallow) parts.push(pktLine(`unshallow ${sha}`));
+    parts.push(pktLine('shallow-info\n'));
+    for (const sha of plan.shallow) parts.push(pktLine(`shallow ${sha}\n`));
+    for (const sha of plan.unshallow) parts.push(pktLine(`unshallow ${sha}\n`));
     parts.push(PKT_DELIM);
   }
-  parts.push(pktLine('packfile'));
+  parts.push(pktLine('packfile\n'));
   parts.push(sidebandPack(plan.pack));
   return Buffer.concat(parts);
 }
@@ -710,9 +710,9 @@ export function handleFetchV0(store: Store, body: Buffer): Buffer {
   const request = parseFetchRequest(items);
   const plan = planFetch(store, request);
   const parts: Buffer[] = [];
-  for (const sha of plan.shallow) parts.push(pktLine(`shallow ${sha}`));
-  for (const sha of plan.unshallow) parts.push(pktLine(`unshallow ${sha}`));
-  parts.push(pktLine(plan.common.length > 0 ? `ACK ${plan.common[plan.common.length - 1]}` : 'NAK'));
+  for (const sha of plan.shallow) parts.push(pktLine(`shallow ${sha}\n`));
+  for (const sha of plan.unshallow) parts.push(pktLine(`unshallow ${sha}\n`));
+  parts.push(pktLine(plan.common.length > 0 ? `ACK ${plan.common[plan.common.length - 1]}\n` : 'NAK\n'));
   parts.push(sidebandPack(plan.pack));
   return Buffer.concat(parts);
 }
