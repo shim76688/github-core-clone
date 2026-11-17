@@ -1,75 +1,62 @@
-# github-core-clone-01 starter
+# github-core-clone-01 — a GitHub-compatible forge in one Node process
 
-A runnable starting point for [the contest](https://make.fun/bounty/github-core-clone-01): the entry's
-HTTP server and the lifecycle the harness drives it with. It answers two routes and a JSON 404 for
-everything else, so it boots and registers but passes almost nothing: the git smart-HTTP server, the
-REST v3 resources, GraphQL v4 and the MCP endpoint are the contest, and this is where you start
-building them.
+This repository holds a self-contained reimplementation of the core of
+GitHub, written for the make.fun contest of the same name. A single Node
+process, with no dependencies and no `git` binary involved, serves four
+faces of GitHub from one shared in-memory store:
 
-## Run it
+- **git smart HTTP** — ref advertisement, protocol v2 `ls-refs`/`fetch`
+  and v0 fetch, plus `receive-pack` with fast-forward checks, so a real
+  git client can clone, pull and push.
+- **REST v3** under `/api/v3` — repositories, branches, commits and the
+  git data API, contents, issues, comments, labels, and pull requests
+  including three-way merges.
+- **GraphQL v4** at `/api/graphql` — queries, mutations, cursor
+  connections, fragments and introspection, in the shapes `gh` and
+  `github-mcp-server` emit, with node ids that match the REST ids.
+- **MCP** at `/mcp` — the Model Context Protocol endpoint (discovery,
+  `tools/list`, `tools/call`) backed by the same store.
+
+State lives in a content-addressed object store in memory; timestamps
+are derived from a monotone sequence, so replaying the same request
+stream reproduces the same state byte for byte.
+
+## Running it
+
+The contest harness runs the entry as `node /bot/main.ts` on Node 22,
+which strips the TypeScript types itself. Locally, the same thing is:
 
 ```sh
-node --experimental-strip-types main.ts
+MAKEFUN_ENV_URL=http://store:8080 node --experimental-strip-types main.ts
 ```
 
-The platform runs `node /bot/main.ts` on Node 22.18 or later, which strips TypeScript types on its
-own; the flag is harmless there and makes an older local Node work too. There is nothing to install:
-the program imports `node:http` and its own `app.ts` only, and the trial has no package manager and
-no internet.
+There is nothing to install: the program imports only its own modules.
 
-## The lifecycle (main.ts)
+`main.ts` is the bootstrap. It reads the companion service's origin
+from `MAKEFUN_ENV_URL` (and exits 1 at once when the variable is
+absent), starts the forge on an ephemeral port, announces that port
+with `POST /register`, then polls `GET /done` until the harness side
+reports the trial finished, at which point it closes the server and
+exits 0. Failed announcements and polls are retried under a 30-second
+deadline with a backoff that grows from 250 ms to a 2 s ceiling.
 
-The env is a server the harness starts beside yours. Its origin is in `MAKEFUN_ENV_URL`
-(`http://store:8080` in a trial).
-
-1. **Bind an ephemeral port.** `server.listen(0)` lets the kernel pick one; read it with
-   `server.address().port`. Never bind 8080: that is the env's port, and on the one-pod layout it is
-   on the same loopback.
-2. **Register.** `POST $MAKEFUN_ENV_URL/register` with `{"port": <the port you bound>}`, as JSON. The
-   env records the address the request came from plus that port as your base URL and dials it from
-   then on. The first register wins: a later one is answered `409` and does not move the base URL.
-3. **Wait for done.** `GET $MAKEFUN_ENV_URL/done` answers at once with `{"done":false}` while the
-   suite runs and `{"done":true}` once its export is written. Poll it with a short backoff; never
-   hold a request open, and never exit before it says `true`.
-4. **Exit 0** when it does. Closing the server first is tidy; the harness stops the env afterwards,
-   and the env's export is what the scorer reads.
-
-A failed poll or register is retried with a short exponential backoff. If `MAKEFUN_ENV_URL` is unset
-there is nothing to talk to, so `main.ts` exits 1 at once.
-
-## The surface the contest scores
-
-| Route | What it is |
-| --- | --- |
-| `GET /healthz` | 200 `{"ok":true}`: the env's boot probe, called twice |
-| `GET /api/v3/` | 200, `X-Oauth-Scopes: repo, read:org`, a JSON API root |
-| `/api/v3/...` | GitHub REST v3: repositories, branches, commits, contents, issues, comments, labels, pull requests, files, merges |
-| `POST /api/graphql` | GitHub GraphQL v4: the documents `gh` and `github-mcp-server` send |
-| `POST /mcp` | Model Context Protocol over streamable HTTP: initialize, tools/list, tools/call |
-| `/<owner>/<repo>.git/...` | git smart HTTP: `info/refs`, `git-upload-pack`, `git-receive-pack` |
-| anything else | 404 `{"message":"Not Found"}` |
-
-The env presents every API call with `Authorization: Bearer $MAKEFUN_SHOP_TOKEN` (the same token is
-in your environment); `/healthz` is the boot probe and takes none. Whether a missing or a wrong token
-is refused is part of the protocol checks, not of this starter.
-
-The score is `feature + agent + perf` (0..1000): the conformance checks over that surface, the MCP
-checks again as the agent-native column, and four timed workloads. The version of the suite the trial
-runs is in the kit under `program/`, so you can grade the same checks locally before you submit.
-
-## Rules and limits
-
-The rules, the scoring weights, the deadline and the prizes are on the contest page:
-**https://make.fun/bounty/github-core-clone-01** (its Rules section). In short: Node 22 only, no
-dependencies at run time, no internet and no `git` binary in the trial; your repository is mounted
-read-only at `/bot` and you may write under `/tmp` only. The env at `MAKEFUN_ENV_URL` is the service
-you answer; the model gateway, if your entry calls a model, is the only other endpoint it can reach.
-The trial's CPU, memory and process limits are the rules'; its wall budget is 900 seconds.
+`app.ts` builds the HTTP server and routes each request to its surface.
+A `GET /healthz` probe answers `{"ok":true}` without credentials;
+every other surface expects the harness's shop token as a Bearer token
+(or as the password of a Basic credential) whenever one is configured.
 
 ## Layout
 
-- `main.ts`: the lifecycle above. Keep it as it is.
-- `app.ts`: the server. This is the file to grow.
-- `package.json`, `tsconfig.json`, `LICENSE` (MIT): the entry's metadata and licence.
+| File | Responsibility |
+| --- | --- |
+| `main.ts` | Process lifecycle: bind, register, wait, exit |
+| `app.ts` | HTTP server and routing across the four surfaces |
+| `store.ts` | The shared store: git objects, repos, issues, pull requests |
+| `git.ts` | The smart-HTTP protocol: pkt-lines, packfiles, fetch and push |
+| `rest.ts` | The REST v3 resources |
+| `graphql.ts` | A small GraphQL parser and executor for the v4 surface |
+| `mcp.ts` | The MCP endpoint and its tools |
 
-The starter is MIT licensed; a submitted entry must carry an OSI-approved licence of its own.
+## Licence
+
+MIT — see `LICENSE`.
