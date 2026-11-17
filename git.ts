@@ -796,9 +796,9 @@ export function handleReceivePack(store: Store, repo: RepoRec, body: Buffer): Pu
 
   if (!wantReport) return { status: 200, body: Buffer.alloc(0) };
   const report: Buffer[] = [];
-  report.push(pktLine(unpackError === null ? 'unpack ok' : `unpack ${unpackError}`));
+  report.push(pktLine(unpackError === null ? 'unpack ok\n' : `unpack ${unpackError}\n`));
   for (const result of results) {
-    report.push(pktLine(result.ok ? `ok ${result.ref}` : `ng ${result.ref} ${result.reason ?? 'failed'}`));
+    report.push(pktLine(result.ok ? `ok ${result.ref}\n` : `ng ${result.ref} ${result.reason ?? 'failed'}\n`));
   }
   report.push(PKT_FLUSH);
   const reportBody = Buffer.concat(report);

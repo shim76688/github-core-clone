@@ -266,6 +266,19 @@ export function handleRest(store: Store, req: RestRequest): RestResponse {
   const seg = req.segments;
   const method = req.method;
 
+  // GET /meta — the installation banner (GitHub Enterprise's shape).
+  if (seg.length === 1 && seg[0] === 'meta' && method === 'GET') {
+    return {
+      status: 200,
+      json: {
+        verifiable_password_authentication: false,
+        ssh_key_fingerprints: {},
+        installed_version: '1.0.0-forge',
+        github_developer_program_url: '',
+      },
+    };
+  }
+
   // GET /user — the token's profile (404 until the owner's login has been bound by an owner path).
   if (seg.length === 1 && seg[0] === 'user' && method === 'GET') {
     if (store.boundOwner === null) return notFound();
@@ -366,6 +379,15 @@ function handleRepo(store: Store, req: RestRequest, repo: RepoRec, seg: string[]
   }
 
   // ------------------------------------------------------------ branches & git refs
+  if (seg[0] === 'branches' && seg.length === 1 && method === 'GET') {
+    const branches = [...repo.refs.keys()]
+      .filter((ref) => ref.startsWith('refs/heads/'))
+      .map((ref) => ref.slice('refs/heads/'.length))
+      .sort()
+      .map((name) => ({ name, commit: { sha: repo.refs.get(`refs/heads/${name}`)! }, protected: false }));
+    const { page, headers } = paginate(req, branches);
+    return { status: 200, json: page, headers };
+  }
   if (seg[0] === 'branches' && seg.length === 2 && method === 'GET') {
     const branch = seg[1]!;
     const sha = repo.refs.get(`refs/heads/${branch}`);
@@ -504,7 +526,7 @@ function putContents(store: Store, req: RestRequest, repo: RepoRec, path: string
   return {
     status: created ? 201 : 200,
     json: {
-      content: contentsEntry(store, repo, path, { mode: '100644', name: path.split('/').pop()!, sha: blobSha }),
+      content: { ...contentsEntry(store, repo, path, { mode: '100644', name: path.split('/').pop()!, sha: blobSha }), encoding: 'base64' },
       commit: { sha: commit, message, author: { name: 'Forge', email: 'forge@localhost' }, committer: { name: 'Forge', email: 'forge@localhost' } },
     },
   };
@@ -571,6 +593,7 @@ function handleIssues(store: Store, req: RestRequest, repo: RepoRec, seg: string
     if (method === 'GET') {
       const state = req.query.get('state') ?? 'open';
       const all = [...repo.issues.values()].sort((a, b) => a.number - b.number);
+      if (req.query.get('direction') === 'desc') all.reverse();
       const filtered = state === 'all' ? all : all.filter((issue) => issue.state === state);
       const { page, headers } = paginate(req, filtered.map((issue) => issueJson(store, repo, issue)));
       return { status: 200, json: page, headers };
@@ -698,6 +721,7 @@ function handlePulls(store: Store, req: RestRequest, repo: RepoRec, seg: string[
     if (method === 'GET') {
       const state = req.query.get('state') ?? 'open';
       const all = [...repo.pulls.values()].sort((a, b) => a.number - b.number);
+      if (req.query.get('direction') === 'desc') all.reverse();
       const filtered = state === 'all' ? all : all.filter((pull) => pull.state === state);
       const { page, headers } = paginate(req, filtered.map((pull) => pullJson(store, repo, pull)));
       return { status: 200, json: page, headers };
