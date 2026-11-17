@@ -77,22 +77,36 @@ const ID_TYPES: Record<number, ObjType> = { 1: 'commit', 2: 'tree', 3: 'blob', 4
 
 /** Inflate the deflate stream starting at `pos`; returns the data and the offset just past it. */
 function inflateAt(buf: Buffer, pos: number): { data: Buffer; next: number } {
-  // A truncated stream always throws and a complete one always succeeds, so the stream's end is
-  // the smallest prefix length that inflates: binary-search it.
-  let lo = 1;
-  let hi = buf.length - pos;
-  let best: Buffer | null = null;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
+  // A truncated stream always throws and a complete one always succeeds (trailing bytes are
+  // ignored), so the stream's end is the smallest prefix length that inflates. Probe an upper
+  // bound exponentially from the stream start, then binary-search inside it: far fewer inflate
+  // attempts than searching the whole remaining pack.
+  const remaining = buf.length - pos;
+  let data: Buffer | null = null;
+  let hi = 1;
+  while (hi <= remaining) {
     try {
-      best = zlib.inflateSync(buf.subarray(pos, pos + mid));
-      hi = mid - 1;
+      data = zlib.inflateSync(buf.subarray(pos, pos + hi));
+      break;
+    } catch {
+      hi *= 2;
+    }
+  }
+  if (data === null) throw new Error('corrupt deflate stream in pack');
+  let lo = Math.floor(hi / 2) + 1;
+  let top = hi;
+  let bestLen = hi;
+  while (lo <= top) {
+    const mid = (lo + top) >> 1;
+    try {
+      zlib.inflateSync(buf.subarray(pos, pos + mid));
+      bestLen = mid;
+      top = mid - 1;
     } catch {
       lo = mid + 1;
     }
   }
-  if (best === null) throw new Error('corrupt deflate stream in pack');
-  return { data: best, next: pos + lo };
+  return { data, next: pos + bestLen };
 }
 
 function applyDelta(base: Buffer, delta: Buffer): Buffer {
