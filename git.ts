@@ -84,11 +84,14 @@ function inflateAt(buf: Buffer, pos: number): { data: Buffer; next: number } {
   const remaining = buf.length - pos;
   let data: Buffer | null = null;
   let hi = 1;
-  while (hi <= remaining) {
+  for (;;) {
+    const len = Math.min(hi, remaining);
     try {
-      data = zlib.inflateSync(buf.subarray(pos, pos + hi));
+      data = zlib.inflateSync(buf.subarray(pos, pos + len));
+      hi = len;
       break;
     } catch {
+      if (len >= remaining) break;
       hi *= 2;
     }
   }
